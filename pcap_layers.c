@@ -20,6 +20,10 @@
  * SOFTWARE.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
 #define _BSD_SOURCE 1
 
 #include <sys/types.h>
@@ -49,6 +53,9 @@
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <netinet/tcp.h>
+#ifdef HAVE_NETINET_IP_COMPAT_H
+#include <netinet/ip_compat.h>
+#endif
 
 #ifndef USE_IPV6
 #define USE_IPV6 1
