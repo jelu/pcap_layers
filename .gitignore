@@ -20,3 +20,4 @@ test-driver
 config.h
 config.h.in~
 .pc
+.dirstamp
