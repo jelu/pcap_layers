@@ -20,7 +20,27 @@
  * SOFTWARE.
  */
 
+#ifndef __pcap_layers_pcap_layers_h
+#define __pcap_layers_pcap_layers_h
+
 #include <pcap/pcap.h>
+#include <time.h>
+
+#include <netinet/in.h>
+#include <netinet/ip6.h>
+
+#include <sys/socket.h>
+#include <net/if_arp.h>
+#include <net/if.h>
+#include <netinet/if_ether.h>
+
+#include <netinet/in_systm.h>
+#include <netinet/ip.h>
+#include <netinet/udp.h>
+#include <netinet/tcp.h>
+#ifdef HAVE_NETINET_IP_COMPAT_H
+#include <netinet/ip_compat.h>
+#endif
 
 typedef int l7_callback(const u_char *, int , void *);
 
@@ -36,3 +56,6 @@ extern int (*callback_l7) (const u_char * l7, int len, void *userdata);
 
 extern void handle_pcap(u_char * userdata, const struct pcap_pkthdr *hdr, const u_char * pkt);
 extern int pcap_layers_init(int dlt, int reassemble);
+extern void pcap_layers_clear_fragments(time_t older_then);
+
+#endif /* __pcap_layers_pcap_layers_h */
