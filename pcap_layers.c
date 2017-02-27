@@ -30,32 +30,15 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 
-#include <netinet/in.h>
-#include <netinet/ip6.h>
-
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <time.h>
 #include <ctype.h>
 #include <assert.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
-
-#include <sys/socket.h>
-#include <net/if_arp.h>
-#include <net/if.h>
-#include <netinet/if_ether.h>
-
-#include <netinet/in_systm.h>
-#include <netinet/ip.h>
-#include <netinet/udp.h>
-#include <netinet/tcp.h>
-#ifdef HAVE_NETINET_IP_COMPAT_H
-#include <netinet/ip_compat.h>
-#endif
 
 #ifndef USE_IPV6
 #define USE_IPV6 1
@@ -78,8 +61,8 @@
 
 #if USE_PPP
 #include <net/if_ppp.h>
-#define PPP_ADDRESS_VAL       0xff	/* The address byte value */
-#define PPP_CONTROL_VAL       0x03	/* The control byte value */
+#define PPP_ADDRESS_VAL       0xff        /* The address byte value */
+#define PPP_CONTROL_VAL       0x03        /* The control byte value */
 #endif
 
 #ifndef IP_OFFMASK
@@ -103,6 +86,7 @@ typedef struct _ipV4Flow {
     struct in_addr dst;
     struct _ipV4Flow *next;
     ipV4Frag *frags;
+    time_t ts;
 } ipV4Flow;
 
 static ipV4Flow *ipV4Flows = NULL;
@@ -128,26 +112,26 @@ void
 handle_l7(const u_char * pkt, int len, void *userdata)
 {
     if (callback_l7)
-	callback_l7(pkt, len, userdata);
+        callback_l7(pkt, len, userdata);
 }
 
 void
 handle_tcp_session(const struct tcphdr *tcp, int len, void *userdata)
 {
     if (callback_tcp_sess)
-	callback_tcp_sess(tcp, len, userdata, callback_l7);
+        callback_tcp_sess(tcp, len, userdata, callback_l7);
     else if (callback_l7)
-	callback_l7((u_char *) tcp + (tcp->th_off<<2), len - (tcp->th_off<<2), userdata);
+        callback_l7((u_char *) tcp + (tcp->th_off<<2), len - (tcp->th_off<<2), userdata);
 }
 
 void
 handle_udp(const struct udphdr *udp, int len, void *userdata)
 {
     if (len < sizeof(*udp))
-	return;
+        return;
     if (callback_udp)
-	if (0 != callback_udp(udp, len, userdata))
-	    return;
+        if (0 != callback_udp(udp, len, userdata))
+            return;
     handle_l7((u_char *) (udp + 1), len - sizeof(*udp), userdata);
 }
 
@@ -155,11 +139,43 @@ void
 handle_tcp(const struct tcphdr *tcp, int len, void *userdata)
 {
     if (len < sizeof(*tcp))
-	return;
+        return;
     if (callback_tcp)
-	if (0 != callback_tcp(tcp, len, userdata))
-	    return;
+        if (0 != callback_tcp(tcp, len, userdata))
+            return;
     handle_tcp_session(tcp, len, userdata);
+}
+
+void
+pcap_layers_clear_fragments(time_t older_then) {
+    ipV4Flow *l;
+    ipV4Flow **L;
+    ipV4Frag *f = NULL;
+    ipV4Frag *ff = NULL;
+
+#if DEBUG
+    fprintf(stderr, "dropping frags older then %ld\n", older_then);
+#endif
+
+    for (L = &ipV4Flows; *L;) {
+        if ((*L)->ts < older_then) {
+            l = *L;
+            *L = (*L)->next;
+#if DEBUG
+            fprintf(stderr, "dropping saved flow for i=%hx s=%x d=%x p=%d\n", l->ip_id, l->src.s_addr, l->dst.s_addr, l->ip_p);
+#endif
+            for (f = l->frags; f;) {
+                ff = f;
+                f = f->next;
+                free(ff->buf);
+                free(ff);
+            }
+            free(l);
+        }
+        else {
+            L = &(*L)->next;
+        }
+    }
 }
 
 void
@@ -174,36 +190,37 @@ handle_ipv4_fragment(const struct ip *ip, int len, void *userdata)
     uint32_t s = 0;
     char *newbuf = NULL;
     if (ip_off & IP_OFFMASK) {
-	for (l = ipV4Flows; l; l = l->next) {
-	    if (l->ip_id != ntohs(ip->ip_id))
-		continue;
-	    if (l->src.s_addr != ip->ip_src.s_addr)
-		continue;
-	    if (l->dst.s_addr != ip->ip_dst.s_addr)
-		continue;
-	    if (l->ip_p != ip->ip_p)
-		continue;
-	    break;
-	}
+        for (l = ipV4Flows; l; l = l->next) {
+            if (l->ip_id != ntohs(ip->ip_id))
+                continue;
+            if (l->src.s_addr != ip->ip_src.s_addr)
+                continue;
+            if (l->dst.s_addr != ip->ip_dst.s_addr)
+                continue;
+            if (l->ip_p != ip->ip_p)
+                continue;
+            break;
+        }
 #if DEBUG
-	if (l)
-	    fprintf(stderr, "found saved flow for i=%hx s=%x d=%x p=%d\n", l->ip_id, l->src.s_addr, l->dst.s_addr, l->ip_p);
+        if (l)
+            fprintf(stderr, "found saved flow for i=%hx s=%x d=%x p=%d\n", l->ip_id, l->src.s_addr, l->dst.s_addr, l->ip_p);
 #endif
     } else {
-	l = calloc(1, sizeof(*l));
-	assert(l);
-	l->ip_id = ntohs(ip->ip_id);
-	l->ip_p = ip->ip_p;
-	l->src = ip->ip_src;
-	l->dst = ip->ip_dst;
-	l->next = ipV4Flows;
-	ipV4Flows = l;
+        l = calloc(1, sizeof(*l));
+        assert(l);
+        l->ip_id = ntohs(ip->ip_id);
+        l->ip_p = ip->ip_p;
+        l->src = ip->ip_src;
+        l->dst = ip->ip_dst;
+        l->next = ipV4Flows;
+        ipV4Flows = l;
 #if DEBUG
-	fprintf(stderr, "created saved flow for i=%hx s=%x d=%x p=%d\n", l->ip_id, l->src.s_addr, l->dst.s_addr, l->ip_p);
+        fprintf(stderr, "created saved flow for i=%hx s=%x d=%x p=%d\n", l->ip_id, l->src.s_addr, l->dst.s_addr, l->ip_p);
 #endif
     }
-    if (NULL == l)		/* didn't find or couldn't create state */
-	return;
+    if (NULL == l)                /* didn't find or couldn't create state */
+        return;
+    l->ts = time(NULL);
     /*
      * Store new frag
      */
@@ -229,16 +246,17 @@ handle_ipv4_fragment(const struct ip *ip, int len, void *userdata)
      */
     for (f = l->frags; f; f = f->next) {
 #if DEBUG
-	fprintf(stderr, " frag %u:%u mf=%d\n", f->offset, f->len, f->more);
+        fprintf(stderr, " frag %u:%u mf=%d\n", f->offset, f->len, f->more);
 #endif
-	if (f->offset > s)	/* gap */
-	    return;
-	s = f->offset + f->len;
-	if (!f->more)
-	    break;
+        if (f->offset > s)        /* gap */
+            return;
+        s = f->offset + f->len;
+        if (!f->more)
+            break;
     }
-    if (NULL == f)		/* didn't find last frag */
-	return;
+    if (NULL == f)                /* didn't find last frag */
+        return;
+
 #if DEBUG
     fprintf(stderr, "have whole packet s=%u, mf=%u\n", s, f->more);
 #endif
@@ -248,36 +266,36 @@ handle_ipv4_fragment(const struct ip *ip, int len, void *userdata)
     newbuf = malloc(s);
     nf = l->frags;
     while ((f = nf)) {
-	nf = f->next;
-	if (s >= f->offset + f->len) {
-	    /*
-	     * buffer overflow protection.  When s was calculated above,
-	     * the for loop breaks upon no more fragments.  But there
-	     * could be multiple fragments with more=0.  So here we make
-	     * sure the memcpy doesn't exceed the size of newbuf.
-	     */
+        nf = f->next;
+        if (s >= f->offset + f->len) {
+            /*
+             * buffer overflow protection.  When s was calculated above,
+             * the for loop breaks upon no more fragments.  But there
+             * could be multiple fragments with more=0.  So here we make
+             * sure the memcpy doesn't exceed the size of newbuf.
+             */
 #if DEBUG
-	    fprintf(stderr, "reassemble memcpy (%p, %p, %u, more=%u\n", newbuf+f->offset,f->buf,f->len,f->more);
+            fprintf(stderr, "reassemble memcpy (%p, %p, %u, more=%u\n", newbuf+f->offset,f->buf,f->len,f->more);
 #endif
-	    memcpy(newbuf + f->offset, f->buf, f->len);
-	}
-	free(f->buf);
-	free(f);
+            memcpy(newbuf + f->offset, f->buf, f->len);
+        }
+        free(f->buf);
+        free(f);
     }
     for (L = &ipV4Flows; *L; L = &(*L)->next) {
-	if (*L == l) {
-	    *L = (*L)->next;
-	    free(l);
-	    break;
-	}
+        if (*L == l) {
+            *L = (*L)->next;
+            free(l);
+            break;
+        }
     }
 #if DEBUG
     fprintf(stderr, "delivering reassmebled packet\n");
 #endif
     if (IPPROTO_UDP == ip->ip_p) {
-	handle_udp((struct udphdr *)newbuf, s, userdata);
+        handle_udp((struct udphdr *)newbuf, s, userdata);
     } else if (IPPROTO_TCP == ip->ip_p) {
-	handle_tcp((struct tcphdr *)newbuf, s, userdata);
+        handle_tcp((struct tcphdr *)newbuf, s, userdata);
     }
 #if DEBUG
     fprintf(stderr, "freeing newbuf\n");
@@ -292,17 +310,17 @@ handle_gre(const u_char * gre, int len, void *userdata)
     unsigned short flags = nptohs(gre);
     unsigned short etype = nptohs(gre + 2);
     if (len < grelen)
-	return;
+        return;
     if (callback_gre)
-	callback_gre(gre, len, userdata);
-    if (flags & 0x0001)		/* checksum present? */
-	grelen += 4;
-    if (flags & 0x0004)		/* key present? */
-	grelen += 4;
-    if (flags & 0x0008)		/* sequence number present? */
-	grelen += 4;
+        callback_gre(gre, len, userdata);
+    if (flags & 0x0001)                /* checksum present? */
+        grelen += 4;
+    if (flags & 0x0004)                /* key present? */
+        grelen += 4;
+    if (flags & 0x0008)                /* sequence number present? */
+        grelen += 4;
     if (is_ethertype_ip(etype))
-	handle_ip((struct ip *) (gre + grelen), len - grelen, userdata);
+        handle_ip((struct ip *) (gre + grelen), len - grelen, userdata);
 }
 
 /*
@@ -318,21 +336,21 @@ handle_ipv4(const struct ip *ip, int len, void *userdata)
     int iplen;
     uint16_t ip_off;
     if (len < sizeof(*ip))
-	return;
+        return;
     offset = ip->ip_hl << 2;
     iplen = XMIN(nptohs(&ip->ip_len), len);
     if (callback_ipv4)
-	if (0 != callback_ipv4(ip, iplen, userdata))
-	    return;
+        if (0 != callback_ipv4(ip, iplen, userdata))
+            return;
     ip_off = ntohs(ip->ip_off);
     if ((ip_off & (IP_OFFMASK | IP_MF)) && _reassemble_fragments) {
-	handle_ipv4_fragment(ip, iplen, userdata);
+        handle_ipv4_fragment(ip, iplen, userdata);
     } else if (IPPROTO_UDP == ip->ip_p) {
-	handle_udp((struct udphdr *)((char *)ip + offset), iplen - offset, userdata);
+        handle_udp((struct udphdr *)((char *)ip + offset), iplen - offset, userdata);
     } else if (IPPROTO_TCP == ip->ip_p) {
-	handle_tcp((struct tcphdr *)((char *)ip + offset), iplen - offset, userdata);
+        handle_tcp((struct tcphdr *)((char *)ip + offset), iplen - offset, userdata);
     } else if (IPPROTO_GRE == ip->ip_p) {
-	handle_gre((u_char *)ip + offset, iplen - offset, userdata);
+        handle_gre((u_char *)ip + offset, iplen - offset, userdata);
     }
 }
 
@@ -344,10 +362,10 @@ handle_ipv6(const struct ip6_hdr *ip6, int len, void *userdata)
     uint16_t payload_len;
 
     if (len < sizeof(*ip6))
-	return;
+        return;
     if (callback_ipv6)
-	if (0 != callback_ipv6(ip6, len, userdata))
-	    return;
+        if (0 != callback_ipv6(ip6, len, userdata))
+            return;
 
     offset = sizeof(struct ip6_hdr);
     nexthdr = ip6->ip6_nxt;
@@ -357,51 +375,51 @@ handle_ipv6(const struct ip6_hdr *ip6, int len, void *userdata)
      * Parse extension headers. This only handles the standard headers, as
      * defined in RFC 2460, correctly. Fragments are discarded.
      */
-    while ((IPPROTO_ROUTING == nexthdr)	/* routing header */
-	||(IPPROTO_HOPOPTS == nexthdr)	/* Hop-by-Hop options. */
-	||(IPPROTO_FRAGMENT == nexthdr)	/* fragmentation header. */
-	||(IPPROTO_DSTOPTS == nexthdr)	/* destination options. */
-	||(IPPROTO_AH == nexthdr)	/* authentication header. */
-	||(IPPROTO_ESP == nexthdr)) {	/* encapsulating security payload. */
-	typedef struct {
-	    uint8_t nexthdr;
-	    uint8_t length;
-	}      ext_hdr_t;
-	ext_hdr_t *ext_hdr;
-	uint16_t ext_hdr_len;
+    while ((IPPROTO_ROUTING == nexthdr)        /* routing header */
+        ||(IPPROTO_HOPOPTS == nexthdr)        /* Hop-by-Hop options. */
+        ||(IPPROTO_FRAGMENT == nexthdr)        /* fragmentation header. */
+        ||(IPPROTO_DSTOPTS == nexthdr)        /* destination options. */
+        ||(IPPROTO_AH == nexthdr)        /* authentication header. */
+        ||(IPPROTO_ESP == nexthdr)) {        /* encapsulating security payload. */
+        typedef struct {
+            uint8_t nexthdr;
+            uint8_t length;
+        }      ext_hdr_t;
+        ext_hdr_t *ext_hdr;
+        uint16_t ext_hdr_len;
 
-	/* Catch broken packets */
-	if ((offset + sizeof(ext_hdr)) > len)
-	    return;
+        /* Catch broken packets */
+        if ((offset + sizeof(ext_hdr)) > len)
+            return;
 
-	/* Cannot handle fragments. */
-	if (IPPROTO_FRAGMENT == nexthdr)
-	    return;
+        /* Cannot handle fragments. */
+        if (IPPROTO_FRAGMENT == nexthdr)
+            return;
 
-	ext_hdr = (ext_hdr_t *) ((char *)ip6 + offset);
-	nexthdr = ext_hdr->nexthdr;
-	ext_hdr_len = (8 * (ext_hdr->length + 1));
+        ext_hdr = (ext_hdr_t *) ((char *)ip6 + offset);
+        nexthdr = ext_hdr->nexthdr;
+        ext_hdr_len = (8 * (ext_hdr->length + 1));
 
-	/* This header is longer than the packets payload.. WTF? */
-	if (ext_hdr_len > payload_len)
-	    return;
+        /* This header is longer than the packets payload.. WTF? */
+        if (ext_hdr_len > payload_len)
+            return;
 
-	offset += ext_hdr_len;
-	payload_len -= ext_hdr_len;
-    }				/* while */
+        offset += ext_hdr_len;
+        payload_len -= ext_hdr_len;
+    }                                /* while */
 
     /* Catch broken and empty packets */
     if (((offset + payload_len) > len)
-	|| (payload_len == 0)
-	|| (payload_len > PCAP_SNAPLEN))
-	return;
+        || (payload_len == 0)
+        || (payload_len > PCAP_SNAPLEN))
+        return;
 
     if (IPPROTO_UDP == nexthdr) {
-	handle_udp((struct udphdr *)((char *)ip6 + offset), payload_len, userdata);
+        handle_udp((struct udphdr *)((char *)ip6 + offset), payload_len, userdata);
     } else if (IPPROTO_TCP == nexthdr) {
-	handle_tcp((struct tcphdr *)((char *)ip6 + offset), payload_len, userdata);
+        handle_tcp((struct tcphdr *)((char *)ip6 + offset), payload_len, userdata);
     } else if (IPPROTO_GRE == nexthdr) {
-	handle_gre((u_char *)ip6 + offset, payload_len, userdata);
+        handle_gre((u_char *)ip6 + offset, payload_len, userdata);
     }
 }
 
@@ -411,14 +429,14 @@ handle_ip(const struct ip *ip, int len, void *userdata)
     /* note: ip->ip_v does not work if header is not int-aligned */
     /* fprintf(stderr, "IPv %d\n", (*(uint8_t *) ip) >> 4); */
     switch ((*(uint8_t *) ip) >> 4) {
-	case 4:
-	handle_ipv4(ip, len, userdata);
-	break;
+        case 4:
+        handle_ipv4(ip, len, userdata);
+        break;
     case 6:
-	handle_ipv6((struct ip6_hdr *)ip, len, userdata);
-	break;
+        handle_ipv6((struct ip6_hdr *)ip, len, userdata);
+        break;
     default:
-	break;
+        break;
     }
 }
 
@@ -426,14 +444,14 @@ static int
 is_ethertype_ip(unsigned short proto)
 {
     if (ETHERTYPE_IP == proto)
-	return 1;
+        return 1;
 #if USE_PPP
     if (PPP_IP == proto)
-	return 1;
+        return 1;
 #endif
 #if USE_IPV6 && defined(ETHERTYPE_IPV6)
     if (ETHERTYPE_IPV6 == proto)
-	return 1;
+        return 1;
 #endif
     return 0;
 }
@@ -442,10 +460,10 @@ static int
 is_family_inet(unsigned int family)
 {
     if (AF_INET == family)
-	return 1;
+        return 1;
 #if USE_IPV6
     if (AF_INET6 == family)
-	return 1;
+        return 1;
 #endif
     return 0;
 }
@@ -457,24 +475,24 @@ handle_ppp(const u_char * pkt, int len, void *userdata)
     char buf[PCAP_SNAPLEN];
     unsigned short proto;
     if (len < 2)
-	return NULL;
+        return NULL;
     if (*pkt == PPP_ADDRESS_VAL && *(pkt + 1) == PPP_CONTROL_VAL) {
-	pkt += 2;		/* ACFC not used */
-	len -= 2;
+        pkt += 2;                /* ACFC not used */
+        len -= 2;
     }
     if (len < 2)
-	return NULL;
+        return NULL;
     if (*pkt % 2) {
-	proto = *pkt;		/* PFC is used */
-	pkt++;
-	len--;
+        proto = *pkt;                /* PFC is used */
+        pkt++;
+        len--;
     } else {
-	proto = nptohs(pkt);
-	pkt += 2;
-	len -= 2;
+        proto = nptohs(pkt);
+        pkt += 2;
+        len -= 2;
     }
     if (is_ethertype_ip(proto))
-	handle_ip((struct ip *)pkt, len, userdata);
+        handle_ip((struct ip *)pkt, len, userdata);
 }
 
 #endif
@@ -484,7 +502,7 @@ handle_null(const u_char * pkt, int len, void *userdata)
 {
     unsigned int family = nptohl(pkt);
     if (is_family_inet(family))
-	handle_ip((struct ip *)(pkt + 4), len - 4, userdata);
+        handle_ip((struct ip *)(pkt + 4), len - 4, userdata);
 }
 
 #ifdef DLT_LOOP
@@ -493,7 +511,7 @@ handle_loop(const u_char * pkt, int len, void *userdata)
 {
     unsigned int family = nptohl(pkt);
     if (is_family_inet(family))
-	handle_ip((struct ip *)(pkt + 4), len - 4, userdata);
+        handle_ip((struct ip *)(pkt + 4), len - 4, userdata);
 }
 
 #endif
@@ -513,27 +531,27 @@ handle_ether(const u_char * pkt, int len, void *userdata)
     struct ether_header *e = (struct ether_header *)pkt;
     unsigned short etype;
     if (len < ETHER_HDR_LEN)
-	return;
+        return;
     etype = nptohs(&e->ether_type);
     if (callback_ether)
-	if (0 != callback_ether(pkt, len, userdata))
-	    return;
+        if (0 != callback_ether(pkt, len, userdata))
+            return;
     pkt += ETHER_HDR_LEN;
     len -= ETHER_HDR_LEN;
     if (ETHERTYPE_8021Q == etype) {
-	unsigned short vlan = nptohs((unsigned short *) pkt);
-	if (callback_vlan)
-	    if (0 != callback_vlan(vlan, userdata))
-		return;
-	etype = nptohs((unsigned short *)(pkt + 2));
-	pkt += 4;
-	len -= 4;
+        unsigned short vlan = nptohs((unsigned short *) pkt);
+        if (callback_vlan)
+            if (0 != callback_vlan(vlan, userdata))
+                return;
+        etype = nptohs((unsigned short *)(pkt + 2));
+        pkt += 4;
+        len -= 4;
     }
     if (len < 0)
-	return;
+        return;
     /* fprintf(stderr, "Ethernet packet of len %d ethertype %#04x\n", len, etype); */
     if (is_ethertype_ip(etype)) {
-	handle_ip((struct ip *)pkt, len, userdata);
+        handle_ip((struct ip *)pkt, len, userdata);
     }
 }
 
@@ -541,7 +559,7 @@ void
 handle_pcap(u_char * userdata, const struct pcap_pkthdr *hdr, const u_char * pkt)
 {
     if (hdr->caplen < ETHER_HDR_LEN)
-	return;
+        return;
     handle_datalink(pkt, hdr->caplen, userdata);
 }
 
@@ -550,31 +568,31 @@ int
 pcap_layers_init(int dlt, int reassemble)
 {
     switch (dlt) {
-	case DLT_EN10MB:
-	handle_datalink = handle_ether;
-	break;
+        case DLT_EN10MB:
+        handle_datalink = handle_ether;
+        break;
 #if USE_PPP
     case DLT_PPP:
-	handle_datalink = handle_ppp;
-	break;
+        handle_datalink = handle_ppp;
+        break;
 #endif
 #ifdef DLT_LOOP
     case DLT_LOOP:
-	handle_datalink = handle_loop;
-	break;
+        handle_datalink = handle_loop;
+        break;
 #endif
 #ifdef DLT_RAW
     case DLT_RAW:
-	handle_datalink = handle_raw;
-	break;
+        handle_datalink = handle_raw;
+        break;
 #endif
     case DLT_NULL:
-	handle_datalink = handle_null;
-	break;
+        handle_datalink = handle_null;
+        break;
     default:
-	fprintf(stderr, "unsupported data link type %d", dlt);
-	exit(1);
-	break;
+        fprintf(stderr, "unsupported data link type %d", dlt);
+        exit(1);
+        break;
     }
     _reassemble_fragments = reassemble;
     return 0;
