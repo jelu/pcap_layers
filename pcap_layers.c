@@ -343,8 +343,9 @@ handle_ipv4(const struct ip *ip, int len, void *userdata)
         if (0 != callback_ipv4(ip, iplen, userdata))
             return;
     ip_off = ntohs(ip->ip_off);
-    if ((ip_off & (IP_OFFMASK | IP_MF)) && _reassemble_fragments) {
-        handle_ipv4_fragment(ip, iplen, userdata);
+    if ((ip_off & (IP_OFFMASK | IP_MF))) {
+        if (_reassemble_fragments)
+            handle_ipv4_fragment(ip, iplen, userdata);
     } else if (IPPROTO_UDP == ip->ip_p) {
         handle_udp((struct udphdr *)((char *)ip + offset), iplen - offset, userdata);
     } else if (IPPROTO_TCP == ip->ip_p) {
