@@ -24,6 +24,7 @@
 #include "config.h"
 #endif
 
+#define _DEFAULT_SOURCE 1
 #define _BSD_SOURCE 1
 
 #include <sys/types.h>
