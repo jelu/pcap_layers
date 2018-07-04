@@ -41,10 +41,6 @@
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
 
-#ifdef linux
-#include <pcap/sll.h>
-#endif
-
 #ifndef USE_IPV6
 #define USE_IPV6 1
 #endif
@@ -68,6 +64,14 @@
 #include <net/if_ppp.h>
 #define PPP_ADDRESS_VAL       0xff        /* The address byte value */
 #define PPP_CONTROL_VAL       0x03        /* The control byte value */
+#endif
+
+#ifdef DLT_LINUX_SLL
+#ifdef HAVE_PCAP_SLL_H
+#include <pcap/sll.h>
+#else
+#error "DLT_LINUX_SLL defined but no <pcap/sll.h> (HAVE_PCAP_SLL_H)"
+#endif
 #endif
 
 #ifndef IP_OFFMASK
@@ -500,7 +504,6 @@ handle_ppp(const u_char * pkt, int len, void *userdata)
     if (is_ethertype_ip(proto))
         handle_ip((struct ip *)pkt, len, userdata);
 }
-
 #endif
 
 void
@@ -519,7 +522,6 @@ handle_loop(const u_char * pkt, int len, void *userdata)
     if (is_family_inet(family))
         handle_ip((struct ip *)(pkt + 4), len - 4, userdata);
 }
-
 #endif
 
 #ifdef DLT_RAW
@@ -528,7 +530,42 @@ handle_raw(const u_char * pkt, int len, void *userdata)
 {
     handle_ip((struct ip *)pkt, len, userdata);
 }
+#endif
 
+#ifdef DLT_LINUX_SLL
+void
+handle_linux_sll(const u_char * pkt, int len, void *userdata)
+{
+    struct sll_header *s = (struct sll_header *)pkt;
+    unsigned short etype, eproto;
+
+    if (len < SLL_HDR_LEN)
+        return;
+    etype = nptohs(&s->sll_pkttype);
+    if (callback_ether)
+        if (0 != callback_ether(pkt, len, userdata))
+            return;
+    pkt += SLL_HDR_LEN;
+    len -= SLL_HDR_LEN;
+    if (len < 0)
+        return;
+    if (ETHERTYPE_8021Q == etype) {
+        unsigned short vlan = nptohs((unsigned short *) pkt);
+        if (callback_vlan)
+            if (0 != callback_vlan(vlan, userdata))
+                return;
+        etype = nptohs((unsigned short *)(pkt + 2));
+        pkt += 4;
+        len -= 4;
+    }
+    if (len < 0)
+        return;
+    eproto = nptohs(&s->sll_protocol);
+    /* fprintf(stderr, "linnux cooked packet of len %d type %#04x proto %#04x\n", len, etype, eproto); */
+    if (is_ethertype_ip(eproto)) {
+        handle_ip((struct ip *)pkt, len, userdata);
+    }
+}
 #endif
 
 void
@@ -544,6 +581,8 @@ handle_ether(const u_char * pkt, int len, void *userdata)
             return;
     pkt += ETHER_HDR_LEN;
     len -= ETHER_HDR_LEN;
+    if (len < 0)
+        return;
     if (ETHERTYPE_8021Q == etype) {
         unsigned short vlan = nptohs((unsigned short *) pkt);
         if (callback_vlan)
@@ -560,28 +599,6 @@ handle_ether(const u_char * pkt, int len, void *userdata)
         handle_ip((struct ip *)pkt, len, userdata);
     }
 }
-
-#ifdef linux
-void
-handle_linux_sll(const u_char * pkt, int len, void *userdata)
-{
-    struct sll_header *s = (struct sll_header *)pkt;
-    unsigned short etype, eproto;
-
-    if (len < SLL_HDR_LEN)
-        return;
-    etype = nptohs(&s->sll_pkttype);
-    if (etype == LINUX_SLL_BROADCAST || etype == LINUX_SLL_MULTICAST )
-        return;
-    eproto = nptohs(&s->sll_protocol);
-    if (eproto != ETHERTYPE_IP)
-        return;
-    pkt += SLL_HDR_LEN;
-    len -= SLL_HDR_LEN;
-    /* fprintf(stderr, "linnux cooked packet of len %d type %#04x proto %#04x\n", len, etype, eproto); */
-    handle_ip((struct ip *)pkt, len, userdata);
-}
-#endif
 
 void
 handle_pcap(u_char * userdata, const struct pcap_pkthdr *hdr, const u_char * pkt)
@@ -614,7 +631,7 @@ pcap_layers_init(int dlt, int reassemble)
         handle_datalink = handle_raw;
         break;
 #endif
-#ifdef linux
+#ifdef DLT_LINUX_SLL
     case DLT_LINUX_SLL:
         handle_datalink = handle_linux_sll;
         break;
