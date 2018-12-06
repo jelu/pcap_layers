@@ -586,12 +586,12 @@ handle_linux_sll(const u_char * pkt, int len, void *userdata)
         if (callback_vlan)
             if (0 != callback_vlan(vlan, userdata))
                 return;
-        etype = nptohs(pkt + 2);
+        // etype = nptohs(pkt + 2);
         pkt += 4;
         len -= 4;
     }
     eproto = nptohs(&s->sll_protocol);
-    /* fprintf(stderr, "linnux cooked packet of len %d type %#04x proto %#04x\n", len, etype, eproto); */
+    /* fprintf(stderr, "linux cooked packet of len %d type %#04x proto %#04x\n", len, etype, eproto); */
     if (is_ethertype_ip(eproto)) {
         handle_ip(pkt, len, userdata);
     }
