@@ -24,29 +24,34 @@
 #include "config.h"
 #endif
 
+#include "pcap_layers.h"
+
 #define _DEFAULT_SOURCE 1
 #define _BSD_SOURCE 1
 
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/stat.h>
-
-#include <signal.h>
+#ifdef DEBUG
 #include <stdio.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <ctype.h>
 #include <assert.h>
-#include <arpa/inet.h>
-#include <arpa/nameser.h>
+#include <netinet/if_ether.h>
+#if USE_PPP
+#include <net/if_ppp.h>
+#define PPP_ADDRESS_VAL       0xff        /* The address byte value */
+#define PPP_CONTROL_VAL       0x03        /* The control byte value */
+#endif
+#ifdef DLT_LINUX_SLL
+#ifdef HAVE_PCAP_SLL_H
+#include <pcap/sll.h>
+#else
+#error "DLT_LINUX_SLL defined but no <pcap/sll.h> (HAVE_PCAP_SLL_H)"
+#endif
+#endif
 
 #ifndef USE_IPV6
 #define USE_IPV6 1
 #endif
-
-#include "byteorder.h"
-#include "pcap_layers.h"
 
 #ifndef PCAP_SNAPLEN
 #define PCAP_SNAPLEN 1460
@@ -58,20 +63,6 @@
 #endif
 #ifndef ETHERTYPE_8021Q
 #define ETHERTYPE_8021Q 0x8100
-#endif
-
-#if USE_PPP
-#include <net/if_ppp.h>
-#define PPP_ADDRESS_VAL       0xff        /* The address byte value */
-#define PPP_CONTROL_VAL       0x03        /* The control byte value */
-#endif
-
-#ifdef DLT_LINUX_SLL
-#ifdef HAVE_PCAP_SLL_H
-#include <pcap/sll.h>
-#else
-#error "DLT_LINUX_SLL defined but no <pcap/sll.h> (HAVE_PCAP_SLL_H)"
-#endif
 #endif
 
 #ifndef IP_OFFMASK
